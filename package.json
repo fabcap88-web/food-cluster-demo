@@ -1,0 +1,15 @@
+{
+  "name": "food-cluster",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "db:generate": "pnpm --filter api prisma generate",
+    "db:push": "pnpm --filter api prisma db push",
+    "db:migrate": "pnpm --filter api prisma migrate dev --name init",
+    "db:seed": "pnpm --filter api prisma db seed"
+  },
+  "packageManager": "pnpm@9.15.4"
+}
