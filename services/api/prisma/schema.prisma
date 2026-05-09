@@ -1,0 +1,387 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum BrandStatus {
+  ACTIVE
+  PAUSED
+  CLOSED
+}
+
+enum ProductStatus {
+  ACTIVE
+  PAUSED
+  SOLD_OUT
+}
+
+enum MerchantRole {
+  ADMIN
+  EDITOR
+}
+
+enum DeliveryStatus {
+  UNASSIGNED
+  ASSIGNED
+  PICKING_UP
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED
+}
+
+enum SettlementStatus {
+  OPEN
+  CLOSED
+  DISPUTED
+}
+
+enum CreditEntryType {
+  TOP_UP
+  USED
+  REFUND
+  VOUCHER_APPLIED
+  MANUAL
+}
+
+enum PaymentMethod {
+  CASH
+  CREDIT
+  CARD_LATER
+}
+
+enum LedgerEntryType {
+  ORDER_REVENUE
+  DELIVERY_FEE
+  CASH_COLLECTED
+  CREDIT_USED
+  PLATFORM_FEE
+  MANUAL_ADJUSTMENT
+  REFUND
+  CASH_DISCOUNT
+  REVERSAL
+}
+
+enum OrderStatus {
+  DRAFT
+  PLACED
+  WAITING_MERCHANT_ACCEPTANCE
+  ACCEPTED
+  PARTIALLY_ACCEPTED
+  PREPARING
+  READY_FOR_PICKUP
+  PICKED_UP
+  DELIVERED
+  CUSTOMER_DECISION_REQUIRED
+  RESOLUTION_REQUIRED
+  PARTIALLY_CANCELLED
+  CANCELLED
+  DISPUTED_REVIEW
+}
+
+enum SubOrderStatus {
+  PENDING
+  PENDING_TIMEOUT
+  ACCEPTED_WAITING_GROUP
+  ACCEPTED
+  REJECTED
+  PREPARING
+  READY
+  HANDED_OFF
+  CANCELLED
+}
+
+model VirtualCourt {
+  id                         String         @id @default(cuid())
+  name                       String
+  slug                       String         @unique
+  tagline                    String?
+  logoUrl                    String?
+  primaryColor               String?        @default("#FF6B35")
+  secondaryColor             String?        @default("#1A1A2E")
+  deliveryFeeCents           Int            @default(200)
+  freeDeliveryThresholdCents Int            @default(2500)
+  isActive                   Boolean        @default(true)
+  createdAt                  DateTime       @default(now())
+  updatedAt                  DateTime       @updatedAt
+
+  brands                     BrandInCourt[]
+  orders                     MasterOrder[]
+}
+
+model BrandInCourt {
+  id            String       @id @default(cuid())
+  courtId       String
+  brandId       String       @unique
+  joinedAt      DateTime     @default(now())
+  isActive      Boolean      @default(true)
+  deliveryCount Int          @default(0)
+  lastCaptainAt DateTime?
+
+  court         VirtualCourt @relation(fields: [courtId], references: [id])
+  brand         Brand        @relation(fields: [brandId], references: [id])
+
+  @@index([courtId, isActive])
+}
+
+model Brand {
+  id                 String        @id @default(cuid())
+  name               String
+  slug               String        @unique
+  description        String?
+  status             BrandStatus   @default(ACTIVE)
+  defaultPrepMinutes Int           @default(15)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  products           Product[]
+  subOrders          SubOrder[]
+  captainOrders      MasterOrder[] @relation("CaptainBrand")
+  ledgerEntries      LedgerEntry[]
+  merchantUsers      MerchantUser[]
+  courtMembership    BrandInCourt?
+}
+
+model MerchantUser {
+  id           String       @id @default(cuid())
+  brandId      String
+  email        String       @unique
+  passwordHash String
+  role         MerchantRole @default(EDITOR)
+  isActive     Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  brand        Brand        @relation(fields: [brandId], references: [id])
+
+  @@index([brandId])
+}
+
+model Product {
+  id              String        @id @default(cuid())
+  brandId         String
+  name            String
+  slug            String
+  description     String?
+  category        String
+  priceCents      Int
+  imageUrl        String?
+  status          ProductStatus @default(ACTIVE)
+  prepMinutes     Int?
+  sortOrder       Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  brand           Brand         @relation(fields: [brandId], references: [id])
+  orderItems      OrderItem[]
+
+  @@unique([brandId, slug])
+  @@index([category])
+  @@index([brandId, status])
+}
+
+model Customer {
+  id                 String        @id @default(cuid())
+  name               String?
+  phone              String        @unique
+  email              String?
+  creditBalanceCents Int           @default(0)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  addresses          Address[]
+  orders             MasterOrder[]
+  creditEntries      CreditEntry[]
+}
+
+model Address {
+  id          String        @id @default(cuid())
+  customerId  String
+  label       String?
+  street      String
+  city        String
+  notes       String?
+  lat         Float?
+  lng         Float?
+  isDefault   Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+
+  customer    Customer      @relation(fields: [customerId], references: [id])
+  orders      MasterOrder[]
+}
+
+model IdempotencyKey {
+  key           String       @id
+  customerPhone String
+  masterOrderId String?
+  status        String       @default("PROCESSING")
+  requestHash   String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  masterOrder   MasterOrder? @relation(fields: [masterOrderId], references: [id])
+
+  @@index([customerPhone])
+  @@index([status, createdAt])
+}
+
+model MasterOrder {
+  id                         String           @id @default(cuid())
+  idempotencyKey             String?
+  orderNumber                Int              @unique @default(autoincrement())
+  courtId                    String?
+  customerId                 String
+  addressId                  String?
+  captainBrandId             String?
+  status                     OrderStatus      @default(PLACED)
+  paymentMethod              PaymentMethod
+  subtotalCents              Int
+  deliveryFeeCents           Int              @default(0)
+  discountCents              Int              @default(0)
+  totalCents                 Int
+  freeDeliveryThresholdCents Int              @default(2500)
+  customerNotes              String?
+  placedAt                   DateTime         @default(now())
+  deliveredAt                DateTime?
+  cancelledAt                DateTime?
+  createdAt                  DateTime         @default(now())
+  updatedAt                  DateTime         @updatedAt
+
+  court                      VirtualCourt?    @relation(fields: [courtId], references: [id])
+  customer                   Customer         @relation(fields: [customerId], references: [id])
+  address                    Address?         @relation(fields: [addressId], references: [id])
+  captainBrand               Brand?           @relation("CaptainBrand", fields: [captainBrandId], references: [id])
+  subOrders                  SubOrder[]
+  deliveryTask               DeliveryTask?
+  ledgerEntries              LedgerEntry[]
+  creditEntries              CreditEntry[]
+  idempotencyKeys            IdempotencyKey[]
+
+  @@index([customerId, status])
+  @@index([status, placedAt])
+  @@index([captainBrandId])
+  @@index([courtId, status])
+}
+
+model SubOrder {
+  id              String         @id @default(cuid())
+  masterOrderId   String
+  brandId         String
+  status          SubOrderStatus @default(PENDING)
+  subtotalCents   Int
+  prepEtaMinutes  Int?
+  acceptedAt      DateTime?
+  readyAt         DateTime?
+  handedOffAt     DateTime?
+  rejectedReason  String?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  masterOrder     MasterOrder    @relation(fields: [masterOrderId], references: [id])
+  brand           Brand          @relation(fields: [brandId], references: [id])
+  items           OrderItem[]
+
+  @@unique([masterOrderId, brandId])
+  @@index([brandId, status])
+}
+
+model OrderItem {
+  id              String      @id @default(cuid())
+  subOrderId      String
+  productId       String
+  nameSnapshot    String
+  brandSnapshot   String
+  unitPriceCents  Int
+  quantity        Int
+  notes           String?
+  createdAt       DateTime    @default(now())
+
+  subOrder        SubOrder    @relation(fields: [subOrderId], references: [id])
+  product         Product     @relation(fields: [productId], references: [id])
+}
+
+model Rider {
+  id            String         @id @default(cuid())
+  name          String
+  phone         String         @unique
+  isActive      Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+
+  deliveryTasks DeliveryTask[]
+}
+
+model DeliveryTask {
+  id               String         @id @default(cuid())
+  masterOrderId    String         @unique
+  status           DeliveryStatus @default(UNASSIGNED)
+  riderId          String?
+  pickupSequence   Json?
+  pickupStartedAt  DateTime?
+  deliveredAt      DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  masterOrder      MasterOrder    @relation(fields: [masterOrderId], references: [id])
+  rider            Rider?         @relation(fields: [riderId], references: [id])
+}
+
+model LedgerEntry {
+  id              String           @id @default(cuid())
+  brandId         String
+  masterOrderId   String?
+  type            LedgerEntryType
+  amountCents     Int
+  description     String?
+  settlementId    String?
+  reversalOfId    String?          @unique
+  createdAt       DateTime         @default(now())
+
+  brand           Brand            @relation(fields: [brandId], references: [id])
+  masterOrder     MasterOrder?     @relation(fields: [masterOrderId], references: [id])
+  settlement      SettlementBatch? @relation(fields: [settlementId], references: [id])
+  reversalOf      LedgerEntry?     @relation("LedgerReversal", fields: [reversalOfId], references: [id])
+  reversedBy      LedgerEntry?     @relation("LedgerReversal")
+
+  @@index([brandId, createdAt])
+  @@index([settlementId])
+  @@index([masterOrderId])
+}
+
+model SettlementBatch {
+  id          String           @id @default(cuid())
+  periodStart DateTime
+  periodEnd   DateTime
+  status      SettlementStatus @default(OPEN)
+  createdAt   DateTime         @default(now())
+  closedAt    DateTime?
+
+  entries     LedgerEntry[]
+}
+
+model CreditEntry {
+  id            String          @id @default(cuid())
+  customerId    String
+  masterOrderId String?
+  amountCents   Int
+  type          CreditEntryType
+  description   String?
+  createdAt     DateTime        @default(now())
+
+  customer      Customer        @relation(fields: [customerId], references: [id])
+  masterOrder   MasterOrder?    @relation(fields: [masterOrderId], references: [id])
+
+  @@index([customerId, createdAt])
+}
+
+model AdminAuditLog {
+  id          String   @id @default(cuid())
+  actorId     String?
+  action      String
+  entityType  String
+  entityId    String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+}
