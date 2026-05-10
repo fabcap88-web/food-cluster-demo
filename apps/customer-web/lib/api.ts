@@ -1,5 +1,4 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
-
+export const API_URL = 'https://api-production-0f73.up.railway.app';
 export async function apiFetch<T>(
   path: string,
   options: RequestInit & { token?: string } = {},
