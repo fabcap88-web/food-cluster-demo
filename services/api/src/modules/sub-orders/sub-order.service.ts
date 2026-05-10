@@ -43,7 +43,7 @@ export class SubOrderService {
 
   async acceptSubOrder(subOrderId: string, merchantBrandId: string, prepEtaMinutes: number) {
     this.validateEta(prepEtaMinutes);
-    await this.timeoutService.cancelMerchantTimeout(subOrderId);
+     await this.timeoutService.cancelMerchantTimeout(subOrderId).catch(() => undefined);
 
     try {
       const result = await this.prisma.$transaction(async (tx) => {
