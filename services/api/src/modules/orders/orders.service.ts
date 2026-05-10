@@ -1,4 +1,10 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { TimeoutService } from '../timeouts/timeout.service';
@@ -16,10 +22,17 @@ interface CreateOrderInput {
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
   private readonly freeDeliveryThresholdCents = 2500;
   private readonly standardDeliveryFeeCents = 200;
   private readonly cashDiscountRate = 0.05;
-  private readonly terminalStatuses = ['CANCELLED', 'DELIVERED', 'DISPUTED_REVIEW', 'READY_FOR_PICKUP', 'PICKED_UP'];
+  private readonly terminalStatuses = [
+    'CANCELLED',
+    'DELIVERED',
+    'DISPUTED_REVIEW',
+    'READY_FOR_PICKUP',
+    'PICKED_UP',
+  ];
 
   constructor(
     private readonly prisma: PrismaService,
@@ -32,10 +45,13 @@ export class OrdersService {
     this.validateItems(input.items);
     const products = await this.getValidatedProducts(input.items);
     const subtotalCents = this.calculateSubtotal(input.items, products);
-    const deliveryFeeCents = subtotalCents >= this.freeDeliveryThresholdCents ? 0 : this.standardDeliveryFeeCents;
-    const discountCents = input.paymentMethod === 'CASH' ? Math.round(subtotalCents * this.cashDiscountRate) : 0;
+    const deliveryFeeCents =
+      subtotalCents >= this.freeDeliveryThresholdCents ? 0 : this.standardDeliveryFeeCents;
+    const discountCents =
+      input.paymentMethod === 'CASH' ? Math.round(subtotalCents * this.cashDiscountRate) : 0;
     const totalCents = subtotalCents + deliveryFeeCents - discountCents;
     if (totalCents <= 0) throw new BadRequestException('Invalid order total');
+
     return {
       subtotalCents,
       deliveryFeeCents,
@@ -62,31 +78,39 @@ export class OrdersService {
         },
       });
     } catch {
-      const existing = await this.prisma.idempotencyKey.findUnique({ where: { key: input.idempotencyKey } });
+      const existing = await this.prisma.idempotencyKey.findUnique({
+        where: { key: input.idempotencyKey },
+      });
       if (!existing) throw new ConflictException('Idempotency conflict');
-      if (existing.customerPhone !== input.customer.phone) throw new ConflictException('Idempotency key already used');
-      if (existing.requestHash && existing.requestHash !== requestHash) throw new ConflictException('Same idempotency key used with different request body');
+      if (existing.customerPhone !== input.customer.phone)
+        throw new ConflictException('Idempotency key already used');
+      if (existing.requestHash && existing.requestHash !== requestHash)
+        throw new ConflictException('Same idempotency key used with different request body');
 
       if (existing.status === 'FAILED') {
-        throw new ConflictException('Previous attempt failed. Generate a new idempotency key and retry.');
+        throw new ConflictException(
+          'Previous attempt failed. Generate a new idempotency key and retry.',
+        );
       }
 
       if (existing.status === 'PROCESSING') {
         const staleAfterMs = 5 * 60 * 1000;
         const ageMs = Date.now() - existing.createdAt.getTime();
-
         if (ageMs > staleAfterMs) {
           await this.prisma.idempotencyKey.update({
             where: { key: input.idempotencyKey },
             data: { status: 'FAILED' },
           });
-
-          throw new ConflictException('Previous order attempt expired. Generate a new idempotency key and retry.');
+          throw new ConflictException(
+            'Previous order attempt expired. Generate a new idempotency key and retry.',
+          );
         }
       }
 
       if (existing.status === 'COMPLETED' && existing.masterOrderId) {
-        const order = await this.prisma.masterOrder.findUnique({ where: { id: existing.masterOrderId } });
+        const order = await this.prisma.masterOrder.findUnique({
+          where: { id: existing.masterOrderId },
+        });
         if (!order) throw new ConflictException('Idempotent order missing');
         return {
           masterOrderId: order.id,
@@ -105,8 +129,10 @@ export class OrdersService {
       const products = await this.getValidatedProducts(input.items);
       const grouped = this.groupItemsByBrand(input.items, products);
       const subtotalCents = this.calculateSubtotal(input.items, products);
-      const deliveryFeeCents = subtotalCents >= this.freeDeliveryThresholdCents ? 0 : this.standardDeliveryFeeCents;
-      const discountCents = input.paymentMethod === 'CASH' ? Math.round(subtotalCents * this.cashDiscountRate) : 0;
+      const deliveryFeeCents =
+        subtotalCents >= this.freeDeliveryThresholdCents ? 0 : this.standardDeliveryFeeCents;
+      const discountCents =
+        input.paymentMethod === 'CASH' ? Math.round(subtotalCents * this.cashDiscountRate) : 0;
       const totalCents = subtotalCents + deliveryFeeCents - discountCents;
       if (totalCents <= 0) throw new BadRequestException('Invalid order total');
 
@@ -116,14 +142,10 @@ export class OrdersService {
         let customer;
 
         if (input.customer.id) {
-          customer = await tx.customer.findUnique({
-            where: { id: input.customer.id },
-          });
-
+          customer = await tx.customer.findUnique({ where: { id: input.customer.id } });
           if (!customer || customer.phone !== input.customer.phone) {
             throw new BadRequestException('Invalid customer identity');
           }
-
           if (input.customer.name && input.customer.name !== customer.name) {
             customer = await tx.customer.update({
               where: { id: customer.id },
@@ -131,7 +153,7 @@ export class OrdersService {
             });
           }
         } else {
-          // Dev fallback only. In production, createOrder is guarded and customer.id comes from JWT.
+          // Dev/demo fallback: upsert by phone
           customer = await tx.customer.upsert({
             where: { phone: input.customer.phone },
             update: { name: input.customer.name },
@@ -213,7 +235,11 @@ export class OrdersService {
             status: 'UNASSIGNED',
             pickupSequence: grouped
               .sort((a, b) => b.estimatedPrepMinutes - a.estimatedPrepMinutes)
-              .map((g) => ({ brandId: g.brandId, brandName: g.brandName, estimatedPrepMinutes: g.estimatedPrepMinutes })),
+              .map((g) => ({
+                brandId: g.brandId,
+                brandName: g.brandName,
+                estimatedPrepMinutes: g.estimatedPrepMinutes,
+              })),
           },
         });
 
@@ -239,8 +265,17 @@ export class OrdersService {
         return { masterOrder, subOrders, customer };
       });
 
+      // FIX: timeout scheduling is now non-fatal.
+      // Previously, if Redis/BullMQ was down, this threw and the entire order
+      // creation would be marked FAILED even though the DB transaction succeeded.
+      // The order existed in the DB but the idempotency key was set to FAILED,
+      // making the order unreachable. Now we log and continue.
       for (const subOrder of result.subOrders) {
-        await this.timeoutService.scheduleMerchantAcceptanceTimeout(subOrder.id);
+        await this.timeoutService.scheduleMerchantAcceptanceTimeout(subOrder.id).catch((err) => {
+          this.logger.warn(
+            `[createOrder] scheduleMerchantAcceptanceTimeout failed for ${subOrder.id} (non-fatal): ${err?.message}`,
+          );
+        });
       }
 
       const response = {
@@ -267,12 +302,17 @@ export class OrdersService {
 
       return response;
     } catch (error) {
-      await this.prisma.idempotencyKey.update({
-        where: { key: input.idempotencyKey },
-        data: { status: 'FAILED' },
-      }).catch((err) => {
-        console.error(`[CRITICAL] Failed to mark idempotency key ${input.idempotencyKey} as FAILED`, err);
-      });
+      await this.prisma.idempotencyKey
+        .update({
+          where: { key: input.idempotencyKey },
+          data: { status: 'FAILED' },
+        })
+        .catch((err) => {
+          this.logger.error(
+            `[CRITICAL] Failed to mark idempotency key ${input.idempotencyKey} as FAILED`,
+            err,
+          );
+        });
       throw error;
     }
   }
@@ -284,7 +324,9 @@ export class OrdersService {
     });
     if (!order) throw new NotFoundException('Order not found');
 
-    const rejected = order.subOrders.filter((s) => s.status === 'REJECTED' || s.status === 'PENDING_TIMEOUT');
+    const rejected = order.subOrders.filter(
+      (s) => s.status === 'REJECTED' || s.status === 'PENDING_TIMEOUT',
+    );
 
     return {
       masterOrderId: order.id,
@@ -294,7 +336,11 @@ export class OrdersService {
       requiresAdminResolution: order.status === 'RESOLUTION_REQUIRED',
       decisionPayload: rejected.length
         ? {
-            rejectedBrands: rejected.map((s) => ({ brandId: s.brandId, brandName: s.brand.name, reason: s.rejectedReason })),
+            rejectedBrands: rejected.map((s) => ({
+              brandId: s.brandId,
+              brandName: s.brand.name,
+              reason: s.rejectedReason,
+            })),
             allowedActions: ['CONTINUE_PARTIAL', 'CANCEL_ALL'],
           }
         : null,
@@ -309,7 +355,10 @@ export class OrdersService {
   }
 
   async recalculateMasterStatus(masterOrderId: string) {
-    const masterOrder = await this.prisma.masterOrder.findUnique({ where: { id: masterOrderId }, include: { subOrders: true } });
+    const masterOrder = await this.prisma.masterOrder.findUnique({
+      where: { id: masterOrderId },
+      include: { subOrders: true },
+    });
     if (!masterOrder) throw new NotFoundException('Master order not found');
 
     if (this.terminalStatuses.includes(masterOrder.status)) {
@@ -319,24 +368,36 @@ export class OrdersService {
     const statuses = masterOrder.subOrders.map((s) => s.status);
     let nextStatus = masterOrder.status;
 
-    if (statuses.every((s) => s === 'REJECTED' || s === 'CANCELLED' || s === 'PENDING_TIMEOUT')) nextStatus = 'CANCELLED';
-    else if (statuses.some((s) => s === 'REJECTED' || s === 'CANCELLED' || s === 'PENDING_TIMEOUT')) nextStatus = 'CUSTOMER_DECISION_REQUIRED';
-    else if (statuses.every((s) => s === 'READY' || s === 'HANDED_OFF')) nextStatus = 'READY_FOR_PICKUP';
+    if (statuses.every((s) => ['REJECTED', 'CANCELLED', 'PENDING_TIMEOUT'].includes(s)))
+      nextStatus = 'CANCELLED';
+    else if (statuses.some((s) => ['REJECTED', 'CANCELLED', 'PENDING_TIMEOUT'].includes(s)))
+      nextStatus = 'CUSTOMER_DECISION_REQUIRED';
+    else if (statuses.every((s) => s === 'READY' || s === 'HANDED_OFF'))
+      nextStatus = 'READY_FOR_PICKUP';
     else if (statuses.some((s) => s === 'PREPARING')) nextStatus = 'PREPARING';
     else if (statuses.every((s) => s === 'ACCEPTED')) nextStatus = 'ACCEPTED';
-    else if (statuses.some((s) => s === 'ACCEPTED_WAITING_GROUP')) nextStatus = 'PARTIALLY_ACCEPTED';
+    else if (statuses.some((s) => s === 'ACCEPTED_WAITING_GROUP'))
+      nextStatus = 'PARTIALLY_ACCEPTED';
 
     if (nextStatus !== masterOrder.status) {
       await this.prisma.masterOrder.updateMany({
         where: { id: masterOrderId, status: masterOrder.status },
         data: { status: nextStatus },
       });
-      this.realtime.emitToAdmins('MASTER_ORDER_STATUS_UPDATED', { masterOrderId, status: nextStatus });
-      this.realtime.emitToCustomer(masterOrder.customerId, 'MASTER_ORDER_STATUS_UPDATED', { masterOrderId, status: nextStatus });
+      this.realtime.emitToAdmins('MASTER_ORDER_STATUS_UPDATED', {
+        masterOrderId,
+        status: nextStatus,
+      });
+      this.realtime.emitToCustomer(masterOrder.customerId, 'MASTER_ORDER_STATUS_UPDATED', {
+        masterOrderId,
+        status: nextStatus,
+      });
     }
 
     return nextStatus;
   }
+
+  // ─── Private helpers ─────────────────────────────────────────────────────────
 
   private validateItems(items: CreateOrderInput['items']) {
     if (!items?.length) throw new BadRequestException('Order must contain at least one item');
@@ -349,13 +410,18 @@ export class OrdersService {
   }
 
   private hashRequest(input: CreateOrderInput) {
-    return crypto.createHash('sha256').update(JSON.stringify({
-      phone: input.customer.phone,
-      address: input.address,
-      items: input.items,
-      paymentMethod: input.paymentMethod,
-      customerNotes: input.customerNotes,
-    })).digest('hex');
+    return crypto
+      .createHash('sha256')
+      .update(
+        JSON.stringify({
+          phone: input.customer.phone,
+          address: input.address,
+          items: input.items,
+          paymentMethod: input.paymentMethod,
+          customerNotes: input.customerNotes,
+        }),
+      )
+      .digest('hex');
   }
 
   private async getValidatedProducts(items: CreateOrderInput['items']) {
@@ -364,7 +430,8 @@ export class OrdersService {
       where: { id: { in: ids }, status: 'ACTIVE', brand: { status: 'ACTIVE' } },
       include: { brand: true },
     });
-    if (products.length !== new Set(ids).size) throw new BadRequestException('Some products are unavailable');
+    if (products.length !== new Set(ids).size)
+      throw new BadRequestException('Some products are unavailable');
     return products;
   }
 
@@ -391,7 +458,10 @@ export class OrdersService {
       };
 
       current.subtotalCents += product.priceCents * item.quantity;
-      current.estimatedPrepMinutes = Math.max(current.estimatedPrepMinutes, product.prepMinutes ?? product.brand.defaultPrepMinutes);
+      current.estimatedPrepMinutes = Math.max(
+        current.estimatedPrepMinutes,
+        product.prepMinutes ?? product.brand.defaultPrepMinutes,
+      );
       current.items.push({ quantity: item.quantity, notes: item.notes, product });
       map.set(product.brandId, current);
     }
@@ -402,7 +472,11 @@ export class OrdersService {
     if (!groups.length) throw new BadRequestException('No brand involved');
     return groups.reduce((winner, current) => {
       if (current.estimatedPrepMinutes > winner.estimatedPrepMinutes) return current;
-      if (current.estimatedPrepMinutes === winner.estimatedPrepMinutes && current.subtotalCents > winner.subtotalCents) return current;
+      if (
+        current.estimatedPrepMinutes === winner.estimatedPrepMinutes &&
+        current.subtotalCents > winner.subtotalCents
+      )
+        return current;
       return winner;
     }, groups[0]);
   }
